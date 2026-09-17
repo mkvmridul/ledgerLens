@@ -2,6 +2,38 @@
 
 Notable changes to LedgerLens, with the reasoning behind each one. Format: what changed, why, existing approach vs new approach. Newest first.
 
+## 2026-09-17 — Console: stream the investigation live
+
+Changes `src/console/server.js` and `src/console/index.html`. No change to the agent, tools, indices or `traceability.js`.
+
+**Why:** an investigation takes about 28 to 46 seconds end to end, and almost all of that is model time. Elasticsearch accounts for about 80 ms. Before this change the page showed a spinner for the whole run and then displayed the report all at once. Judges see latency before they read the answer, so the real cost is the silent wait, not the total time.
+
+**Existing approach:** `POST /api/investigate` called Agent Builder's blocking `/api/agent_builder/converse`. The server waited for the whole round, then returned one JSON response with `steps` and `message`, and the page rendered it.
+
+**New approach:**
+- `POST /api/investigate/stream` (new) calls `/api/agent_builder/converse/async`, which responds with Server-Sent Events, and pipes the body to the browser unchanged. The server doesn't parse the stream, so it can't break the framing. The stream is padded with `:` comment lines to get past proxy buffering, and the page skips them.
+- The page reads the stream with `fetch` and a `ReadableStream` reader. It can't use `EventSource`, because the request is a POST with a body. What each event does:
+  - `tool_call`, `tool_result` and `reasoning` build the step list live. A tool shows a spinner until its result arrives. The first `reasoning` event is a `transient` placeholder and is skipped.
+  - `message_chunk` types out the text the agent is writing. Every interim narration has its own `message_id`, so the text area resets when the id changes.
+  - `round_complete` carries the same `steps` and `message` shape the blocking endpoint returns. The existing `render()` and traceability check run on it without changes. Figures are highlighted only at this point, once every tool result is known.
+  - `conversation_id_set` arrives early and holds the id that the approve flow and the Kibana trace link need. `conversation_created` carries the same id, but it arrives after `round_complete`.
+  - `thinking_complete` gives `time_to_first_token`, which now shows in the investigation header next to the total time.
+- The blocking `/api/investigate` endpoint is unchanged and is the fallback. The page uses it when the stream returns an HTTP error, when the stream ends before `round_complete` (for example, the connection drops), and always in `AGENT_MODE=mock`. The server also returns 409 on the stream route in mock mode, so mock mode never reaches a model.
+- The step markup moved out of `render()` into `stepsHtml()`, which both the live view and the final view use.
+
+**Measured:** two live runs against the cloud project (Elastic Managed LLM) for `DSB-20260916-00297`:
+- The first stream events (`conversation_id_set` and `reasoning`) arrived at 16.6 s and the first text at 20.2 s. `round_complete` arrived at 45.0 s.
+- An earlier direct `curl` of `converse/async` finished in 28.0 s, with `time_to_first_token` at 16.5 s.
+- Every run made 4 LLM calls, and about 46k of 69k input tokens were cached.
+
+Total time varies a lot from run to run, so treat any single number as one sample. The part streaming changes, the first visible progress, landed at about 16 s in every run.
+
+**Verified:**
+- `npm test` passes (14/14).
+- A captured live stream was replayed through the real page script (with the DOM and `fetch` stubbed) at random chunk boundaries. The live step list rendered mid-stream, the final report traced 18/18 figures, and the approve button and trace link rendered.
+- Three fallback cases (HTTP 500, stream cut at 60%, mock mode) each ended with a fully traced report and no error.
+- Checked in the browser against the cloud project: steps and text stream live, and approve opens the case.
+
 ## 2026-09-17 — Agent instructions: approval gating + tool batching
 
 Both changes are to `elastic/agent/instructions.md` only. No index, mapping, ES|QL tool, or workflow changed. Found during the first live run against the cloud project and a real LLM (Elastic Managed LLM).
@@ -33,7 +65,7 @@ Both changes are to `elastic/agent/instructions.md` only. No index, mapping, ES|
 
 Net effect: one fewer sequential LLM round trip on every real break investigation (roughly a 4-turn conversation instead of 5), with no change to which tools run or what they return.
 
-**Not yet done:** latency wasn't re-measured after this change — the model already showed some spontaneous parallel tool-calling behavior in the one run observed, so the actual saving needs to be measured against the new instructions, not assumed. Streaming the response (`/api/agent_builder/converse` → an SSE/stream variant, if the Serverless version supports it) is a separate, larger perceived-latency win that was scoped but not implemented — it would need both a server-side change in `src/console/server.js` and a client-side change in `src/console/index.html` to consume a stream instead of a single JSON response.
+**Not yet done:** latency wasn't re-measured after this change — the model already showed some spontaneous parallel tool-calling behavior in the one run observed, so the actual saving needs to be measured against the new instructions, not assumed. Later live runs confirmed the batching: `model_usage.llm_calls` is 4, and `evidence_rows` and `trace_failure_point` share one `tool_call_group_id`. Streaming is covered in the entry above.
 
 ### How to verify these two changes
 

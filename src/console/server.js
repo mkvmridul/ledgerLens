@@ -2,6 +2,7 @@
 // four things so the browser never holds an Elastic API key:
 //   GET  /api/summary?business_date=   day totals + the break queue (two ES|QL queries)
 //   POST /api/investigate              one Agent Builder conversation turn: "Investigate <id>"
+//   POST /api/investigate/stream       the same turn over SSE, proxied verbatim from converse/async
 //   POST /api/chat                     follow-up turn in the same conversation (approve / dismiss / questions)
 //   POST /api/translate                Sarvam translate (optional; needs SARVAM_API_KEY)
 //   GET  /api/audit?disbursal_id=      audit records the workflow wrote after approval
@@ -12,6 +13,7 @@
 
 import { createServer } from "node:http";
 import { readFileSync } from "node:fs";
+import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { es, esql, kbn, KIBANA_URL } from "../es.js";
@@ -86,6 +88,31 @@ async function converse(input, conversation_id) {
     message: r.response?.message ?? "",
     elapsed_ms: Date.now() - t0,
   };
+}
+
+/**
+ * Same turn as converse(), over Server-Sent Events. Returns the upstream body so the caller can
+ * pipe it to the browser unchanged: re-parsing it here would only risk mangling the framing.
+ * The stream is padded with ":" comment lines to defeat proxy buffering; an SSE reader ignores them.
+ */
+async function converseStream(input, conversation_id) {
+  const body = { agent_id: AGENT_ID, input, ...llm };
+  if (conversation_id) body.conversation_id = conversation_id;
+  const res = await fetch(`${KIBANA_URL()}/api/agent_builder/converse/async`, {
+    method: "POST",
+    headers: {
+      Authorization: `ApiKey ${process.env.KIBANA_API_KEY || process.env.ES_API_KEY}`,
+      "Content-Type": "application/json",
+      "kbn-xsrf": "true",
+      Accept: "text/event-stream",
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok || !res.body) {
+    const text = await res.text().catch(() => "");
+    throw Object.assign(new Error(`converse/async -> ${res.status} ${text.slice(0, 300)}`), { status: res.status });
+  }
+  return res.body;
 }
 
 // ---------------------------------------------------------------- workflow (direct fallback)
@@ -213,6 +240,22 @@ const server = createServer(async (req, res) => {
       if (!/^DSB-\d{8}-\d{5}$/.test(disbursal_id ?? "")) return send(res, 400, { error: "disbursal_id required" });
       const input = `Investigate ${disbursal_id}.`;
       return send(res, 200, AGENT_MODE === "mock" ? await mockConverse(input) : await converse(input));
+    }
+    if (req.method === "POST" && url.pathname === "/api/investigate/stream") {
+      const { disbursal_id } = await readJson(req);
+      if (!/^DSB-\d{8}-\d{5}$/.test(disbursal_id ?? "")) return send(res, 400, { error: "disbursal_id required" });
+      // Mock mode must never reach a model; the page falls back to /api/investigate.
+      if (AGENT_MODE === "mock") return send(res, 409, { error: "mock mode does not stream" });
+      const upstream = await converseStream(`Investigate ${disbursal_id}.`);
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive",
+        "X-Accel-Buffering": "no",
+      });
+      const node = Readable.fromWeb(upstream);
+      node.on("error", () => res.destroy());
+      return node.pipe(res);
     }
     if (req.method === "POST" && url.pathname === "/api/chat") {
       const { input, conversation_id } = await readJson(req);
