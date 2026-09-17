@@ -2,6 +2,8 @@
 // Match every DISBURSAL_SUCCEEDED ledger event for one business date against all settlement rows,
 // grouped by disbursal_id, and return only the groups that break a rule.
 // The match is a single STATS over a unified index: no join, no application code, no LLM.
+// Scalars used in comparisons (value_date, business_date) are aggregated with MAX so they are single-valued:
+// a comparison on a multivalued field is null in ES|QL and would silently fall through the CASE.
 // Params: ?business_date (string, YYYY-MM-DD)
 FROM ledgerlens-recon
 | WHERE (source == "ledger" AND event_type == "DISBURSAL_SUCCEEDED" AND business_date == ?business_date)
@@ -18,11 +20,11 @@ FROM ledgerlens-recon
         settlement_rows    = SUM(s_n),
         expected_fee_paise = SUM(l_fee),
         charged_fee_paise  = SUM(s_fee),
-        partner            = VALUES(partner),
-        rail               = VALUES(rail),
-        loan_id            = VALUES(loan_id),
-        business_date      = VALUES(business_date),
-        value_date         = VALUES(value_date)
+        partner            = MAX(partner),
+        rail               = MAX(rail),
+        loan_id            = MAX(loan_id),
+        business_date      = MAX(business_date),
+        value_date         = MAX(value_date)
   BY disbursal_id
 | WHERE ledger_rows > 0
 | EVAL delta_paise = ledger_paise - settled_paise,

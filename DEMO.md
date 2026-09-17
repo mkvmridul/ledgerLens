@@ -4,7 +4,7 @@ Five to seven minutes. Two slides, then the product, then two slides. Rehearse s
 
 ## Before you walk on
 
-- [ ] Elastic Cloud project up. `npm run verify` prints `all checks passed`. `npm run setup:agent` prints the smoke line.
+- [ ] Elastic Cloud project up. `npm run verify:report` prints `all checks passed` and rewrites BENCHMARKS.md. Then update the three places that quote its numbers: the README "Measured" table, slides 4 and 5 (`presentation/build-deck.js`, rebuild), and the 1:00 line below. `npm run setup:agent` prints the smoke line.
 - [ ] Console running: `npm run console` → http://localhost:3000 shows 391 disbursals and 10 breaks for 2026-09-16.
 - [ ] Kibana open in a second tab at `/app/agent_builder`, agent **LedgerLens** selected, an empty conversation.
 - [ ] One full investigation already run once today (warms the inference endpoint and the model).
@@ -15,9 +15,9 @@ Five to seven minutes. Two slides, then the product, then two slides. Rehearse s
 
 | Time | What you show | What you say |
 |---|---|---|
-| 0:00 | Slide 1 | "Three systems must agree about money: the ledger, the bank's settlement file, and the pipeline that pushed the funds. When they disagree, an analyst spends thirty to sixty minutes per break, by hand, and the write-up is only as good as one tired human at 11pm." |
+| 0:00 | Slide 1 | "Three systems must agree about money: the ledger, the bank's settlement file, and the pipeline that pushed the funds. When they disagree, an analyst spends thirty to sixty minutes per break, by hand. That is my own number from running this in production. And the write-up is only as good as one tired human at 11pm." |
 | 0:30 | Slide 2 | "Rules match or they don't. Chat can explain, but you can't sign off on a number a language model produced. LedgerLens splits the job: ES|QL computes every figure, the model only orders the investigation and explains. Then a workflow acts, behind a human." |
-| 1:00 | Console, break queue | "This is a settlement day. 391 disbursals, ₹9.6 crore. One ES|QL query matched ledger against the settlement file in forty milliseconds and flagged ten. No join, no application code." Point at the top tile: figures computed by the LLM: 0. |
+| 1:00 | Console, break queue | "This is a settlement day. 391 disbursals, ₹9.6 crore. One ES|QL query matched ledger against the settlement file in under sixty milliseconds and flagged ten. No join, no application code." Point at the top tile: figures computed by the LLM: 0. |
 | 1:30 | Click `DSB-20260916-00297` (MISSING_CREDIT) | "Investigate." While it runs: "The agent is calling five tools in sequence. Watch the list on top." |
 | 2:00 | Report appears | Read the rule that fired and the figures. "₹51,500 booked as success, ₹0 settled. Every green figure is highlighted because it appears verbatim in a tool result. 12 of 12." Scroll to Pipeline: "Here is *why*: the ledger booked success on the PSP's ACCEPTED, then the callback timed out and the status poll said the beneficiary account was invalid. Money never left." Precedent: "The library found the same failure resolved on the 14th." |
 | 2:45 | Kibana tab, the conversation | "This is the Agent Builder trace. Five tool calls, each with its ES|QL and its rows. The model wrote prose. It computed nothing." |
@@ -60,7 +60,7 @@ Approve. Open the case.
 
 **What would production need?** Real APM instrumentation (the ES|QL is already ECS-shaped), S3 → Lambda ingest of partner files, the LLM through a Bedrock inference endpoint under your AWS account, RBAC on the workflow, and reversal workflows behind a second approval.
 
-**What is the manual time you quote?** A practitioner estimate, thirty to sixty minutes per break, not a benchmark. The agent's time is measured live on screen.
+**What is the manual time you quote?** My own estimate from operating this class of system in production: thirty to sixty minutes per break. It is not a benchmark and I say so on the slide. The agent's time is measured live on screen, and the ES|QL timings are in BENCHMARKS.md.
 
 ## Copying into the team repository on the 18th
 

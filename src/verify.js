@@ -5,13 +5,23 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { esql } from "./es.js";
+import { writeFileSync } from "node:fs";
+import { es, esql } from "./es.js";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const tools = JSON.parse(readFileSync(join(ROOT, "elastic", "tools", "tools.json"), "utf8"));
 const queryOf = (id) => readFileSync(join(ROOT, "elastic", "tools", tools.find((t) => t.id === id).query_file), "utf8");
 
 const answer = JSON.parse(readFileSync(join(ROOT, "data", "answer-key.json"), "utf8"));
+
+// Every line printed is also captured so --report can write it to BENCHMARKS.md verbatim.
+const captured = [];
+const rawLog = console.log;
+console.log = (...args) => {
+  const line = args.join(" ");
+  captured.push(line);
+  rawLog(line);
+};
 
 let failures = 0;
 const fail = (msg) => {
@@ -150,6 +160,25 @@ export async function verify() {
   for (const [id, arr] of Object.entries(timings)) console.log(`  ES|QL ${id.padEnd(20)} median ${median(arr)} ms over ${arr.length} runs`);
 
   console.log(failures ? `\n${failures} check(s) FAILED` : "\nall checks passed");
+
+  if (process.argv.includes("--report")) {
+    const info = await es("GET", "/");
+    const header = [
+      "# Benchmarks",
+      "",
+      "Verbatim output of `npm run verify:report`. Every number quoted in the README and the deck comes from here.",
+      "",
+      `- Run at: ${new Date().toISOString()}`,
+      `- Cluster: ${info.cluster_name ?? "?"} · Elasticsearch ${info.version?.number ?? "?"} (${info.version?.build_flavor ?? "?"})`,
+      `- Node: ${process.version}`,
+      `- Data: seed ${answer.seed}, generated ${answer.generated_at}, answer key data/answer-key.json`,
+      "- Latency figures are the ES|QL `took` value reported by Elasticsearch for each query, not end-to-end wall clock.",
+      "",
+      "```",
+    ];
+    writeFileSync(join(ROOT, "BENCHMARKS.md"), [...header, ...captured, "```", ""].join("\n"));
+    console.log("wrote BENCHMARKS.md");
+  }
   return failures;
 }
 

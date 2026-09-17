@@ -10,11 +10,11 @@ Forge the Future 2026 · Elastic × AWS · Track 4: Industry Vertical Demo (BFSI
 
 ## The problem
 
-Three systems must agree about every disbursal: the event-sourced **ledger**, the partner's **settlement file**, and the **pipeline traces** that pushed the funds. When they disagree, that is a reconciliation break: a disbursal marked success with no credit in the bank file, a double debit, a fee mismatch, a late credit. Today an analyst investigates each one by hand, pulling entries from three systems and writing a root cause. It takes 30 to 60 minutes per break (practitioner estimate), does not scale on high-volume days, and the write-up is only as trustworthy as one tired human at 11pm.
+Three systems must agree about every disbursal: the event-sourced **ledger**, the partner's **settlement file**, and the **pipeline traces** that pushed the funds. When they disagree, that is a reconciliation break: a disbursal marked success with no credit in the bank file, a double debit, a fee mismatch, a late credit. Today an analyst investigates each one by hand, pulling entries from three systems and writing a root cause. It takes 30 to 60 minutes per break (the builder's own estimate from operating this class of system in production, not a benchmark), does not scale on high-volume days, and the write-up is only as trustworthy as one tired human at 11pm.
 
 ## What LedgerLens does
 
-1. **Matches** a day's ledger against the settlement file with one ES|QL `STATS ... BY disbursal_id` over a unified index. No join, no application code. 391 disbursals in about 40 ms.
+1. **Matches** a day's ledger against the settlement file with one ES|QL `STATS ... BY disbursal_id` over a unified index. No join, no application code. 391 disbursals in 55 ms median ES|QL time on a local Elasticsearch 9.5.4 (see [BENCHMARKS.md](BENCHMARKS.md), regenerated on the cloud project on the 18th).
 2. **Classifies** each break with an ES|QL `CASE` rule table: `MISSING_CREDIT`, `DOUBLE_DEBIT`, `FEE_MISMATCH`, `TIMING_T1`, or `UNRESOLVED` when no rule explains it.
 3. **Investigates** one break with an Agent Builder agent that calls five ES|QL tools in sequence: exact figures and rule, evidence rows with IDs, the failing span in the pipeline trace, and a hybrid-search precedent from past resolved cases.
 4. **Reports** in a fixed audit-ready format. Every amount and identifier is copied verbatim from a tool result. The console checks this live and highlights each figure to the tool it came from.
@@ -65,7 +65,7 @@ flowchart LR
 |---|---|
 | Elasticsearch mappings | Three indices with `dynamic: strict`. Identifiers, codes and business dates are `keyword`; money is integer paise (`long`); only human narration is `text`. See `elastic/mappings/`. |
 | ES|QL | Unified-index match with `STATS ... BY disbursal_id`, classification with a `CASE` rule table, parameterised `?name` placeholders shared by Agent Builder tools and the verify script. |
-| Hybrid search | `ledgerlens.similar_cases` is one query: `FORK` a BM25 branch on `summary` and a semantic branch on `summary_semantic` (`semantic_text`, embedded by Elastic at index and query time), then `FUSE` with reciprocal rank fusion. |
+| Hybrid search | `ledgerlens.similar_cases` is one query: `FORK` a BM25 branch on `summary` and a semantic branch on `summary_semantic` (`semantic_text`, embedded by Elastic at index and query time), then `FUSE` with reciprocal rank fusion. Verified on 9.5.4. If the cloud project rejects `FORK`/`FUSE`, `setup:agent` falls back to Agent Builder's built-in `index_search` tool over the same index (hybrid retrieval, managed by Elastic) and says so in its output; section 6 of `npm run verify` reports which path works. |
 | Agent Builder | Six tools (five `esql`, one `workflow`), one agent with the instructions in `elastic/agent/instructions.md`, created through the Kibana API by `src/setup-agent.js`. The per-run trace waterfall is the explainability artefact shown on stage. |
 | Elastic Workflows + Cases | `elastic/workflows/ledgerlens-open-case.yaml`: `cases.createCase` then `elasticsearch.request` to write the audit record, exposed to the agent as a tool. |
 | AWS | Runs on Elastic Cloud Serverless on AWS. With AWS credentials in `.env`, `setup:agent` creates an Amazon Bedrock `chat_completion` inference endpoint (`ledgerlens-bedrock`) and the console converses through it. Without them, the project's Elastic Managed LLM is used. |
@@ -73,7 +73,7 @@ flowchart LR
 
 ## Measured
 
-From `npm run verify` against a local Elasticsearch 9.5.4 (`data/answer-key.json` is the ground truth):
+From `npm run verify:report` against a local Elasticsearch 9.5.4; the verbatim output is committed as [BENCHMARKS.md](BENCHMARKS.md) and `data/answer-key.json` is the ground truth. The same command is re-run on the cloud project on the 18th and the file updated.
 
 | What | Result |
 |---|---|
@@ -81,11 +81,11 @@ From `npm run verify` against a local Elasticsearch 9.5.4 (`data/answer-key.json
 | Per-break figures and classification (`ledgerlens.break_delta`) | 14 / 14 exact: break type, settlement rows, ledger, settled, delta, fee delta, UTRs |
 | Failure point in the trace (`ledgerlens.trace_failure_point`) | 14 / 14: the seeded failing spans surface first; clean pipelines report clean |
 | Precedent retrieval (`ledgerlens.similar_cases`, hybrid) | Same-type precedent at rank 1 for all 5 break types |
-| ES|QL latency (median `took`) | match 39 ms · delta 10 ms · trace 7 ms · hybrid 24 ms |
+| ES|QL latency (median `took`, this run) | match 55 ms · delta 10 ms · trace 6 ms · hybrid 22 ms |
 | Figures in a report traced to a tool result | 12 / 12 on the mock report; live reports show their own `N / N` |
 | Numbers computed by the LLM | 0, by construction |
 
-Investigation wall-clock is measured live in the console header. The manual baseline of 30 to 60 minutes per break is a practitioner estimate, not a benchmark.
+Investigation wall-clock is measured live in the console header. The manual baseline of 30 to 60 minutes per break is the builder's own estimate from operating this class of system in production, not a benchmark.
 
 ## Run it
 
@@ -97,6 +97,7 @@ npm run generate          # data/*.ndjson + data/answer-key.json (deterministic)
 npm test                  # generator invariants + traceability checker, no cluster needed
 npm run ingest            # create the four indices with explicit mappings, bulk load
 npm run verify            # run every ES|QL tool against the answer key, print the scorecard
+npm run verify:report     # same, and write the output to BENCHMARKS.md
 npm run setup:agent       # workflow, tools, agent in Kibana, plus a smoke test through Agent Builder
 npm run console           # http://localhost:3000
 ```
@@ -125,6 +126,8 @@ tests/                          node:test suites
 presentation/                   the deck
 DATA.md                         provenance: what is synthetic (everything), how it was generated, the break catalogue
 DEMO.md                         run of show, prompts, fallbacks, expected questions
+BENCHMARKS.md                   verbatim verify output; the source of every number quoted above
+PRIOR_WORK.md                   what existed before build day, file by file
 ```
 
 ## Scope and honesty
@@ -133,6 +136,8 @@ DEMO.md                         run of show, prompts, fallbacks, expected questi
 
 **Synthetic by design:** all data. Spans are generated in APM/ECS shape rather than captured by an APM agent; the ES|QL would run unchanged against `traces-apm-*`. Partner files are loaded directly rather than through S3 and Lambda.
 
+**Stubbed or conditional:** the S3 → Lambda ingest named in the original submission is not implemented (files are bulk-loaded by `src/ingest.js`). The narration model is Amazon Bedrock through an Elasticsearch inference endpoint when AWS credentials are present, otherwise the project's Elastic Managed LLM; the console header shows which one is live. Sarvam translation runs only with `SARVAM_API_KEY`; without it the buttons are hidden. If `FORK`/`FUSE` is unavailable, precedent search uses the `index_search` fallback. `AGENT_MODE=mock` is a development mode and is never used for the demo.
+
 **Out of scope on purpose:** live bank or PSP connections, and any movement of funds. Every write stays behind human approval, which is the correct posture for regulated money movement.
 
-**What existed before 18 September 2026:** the generator, mappings, ES|QL tools, agent instructions, workflow YAML, console, tests and deck were drafted beforehand and verified against a local Elasticsearch 9.5.4 + Kibana. On the 18th: connection to the cloud project, agent tuning against the real model, the recorded demo, and this README's final numbers. The git history tells the same story.
+**What existed before 18 September 2026:** see [PRIOR_WORK.md](PRIOR_WORK.md) for the file-by-file list. In short: the generator, mappings, ES|QL tools, agent instructions, workflow YAML, console, tests and deck were drafted beforehand and verified against a local Elasticsearch 9.5.4 + Kibana. On the 18th: connection to the cloud project, agent tuning against the real model, the recorded demo, and the final numbers. The git history tells the same story.

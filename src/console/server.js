@@ -14,7 +14,7 @@ import { createServer } from "node:http";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { esql, kbn, KIBANA_URL } from "../es.js";
+import { es, esql, kbn, KIBANA_URL } from "../es.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, "..", "..");
@@ -23,6 +23,21 @@ const AGENT_ID = process.env.AGENT_ID || "ledgerlens";
 const AGENT_MODE = process.env.AGENT_MODE === "mock" ? "mock" : "live";
 const CASE_MODE = process.env.CASE_MODE === "direct" ? "direct" : "workflow";
 const WORKFLOW_ID = "ledgerlens-open-case";
+const BEDROCK_INFERENCE_ID = "ledgerlens-bedrock";
+
+// Which model answers: an explicit LLM_INFERENCE_ID / LLM_CONNECTOR_ID wins; otherwise the Bedrock inference
+// endpoint that setup:agent creates when AWS credentials are present; otherwise the project's default LLM.
+let llm = process.env.LLM_INFERENCE_ID ? { inference_id: process.env.LLM_INFERENCE_ID } : process.env.LLM_CONNECTOR_ID ? { connector_id: process.env.LLM_CONNECTOR_ID } : {};
+async function detectBedrock() {
+  if (Object.keys(llm).length) return;
+  try {
+    await es("GET", `/_inference/chat_completion/${BEDROCK_INFERENCE_ID}`);
+    llm = { inference_id: BEDROCK_INFERENCE_ID };
+  } catch {
+    /* not created: the project's default model is used */
+  }
+}
+const llmLabel = () => llm.inference_id ? `${llm.inference_id} (Amazon Bedrock)` : llm.connector_id ? `connector ${llm.connector_id}` : "project default (Elastic Managed LLM)";
 
 const tools = JSON.parse(readFileSync(join(ROOT, "elastic", "tools", "tools.json"), "utf8"));
 const queryOf = (id) => readFileSync(join(ROOT, "elastic", "tools", tools.find((t) => t.id === id).query_file), "utf8");
@@ -59,10 +74,8 @@ async function auditFor(disbursal_id) {
 // ---------------------------------------------------------------- agent
 
 async function converse(input, conversation_id) {
-  const body = { agent_id: AGENT_ID, input };
+  const body = { agent_id: AGENT_ID, input, ...llm };
   if (conversation_id) body.conversation_id = conversation_id;
-  if (process.env.LLM_INFERENCE_ID) body.inference_id = process.env.LLM_INFERENCE_ID;
-  else if (process.env.LLM_CONNECTOR_ID) body.connector_id = process.env.LLM_CONNECTOR_ID;
   const t0 = Date.now();
   const r = await kbn("POST", "/api/agent_builder/converse", body, { timeoutMs: 300_000 });
   return {
@@ -190,7 +203,7 @@ const server = createServer(async (req, res) => {
         case_mode: CASE_MODE,
         kibana_url: KIBANA_URL(),
         sarvam: Boolean(process.env.SARVAM_API_KEY),
-        llm: process.env.LLM_INFERENCE_ID || process.env.LLM_CONNECTOR_ID || "project default",
+        llm: llmLabel(),
       });
     }
     if (req.method === "GET" && url.pathname === "/api/summary") return send(res, 200, await summary(url.searchParams.get("business_date") || process.env.DEMO_BUSINESS_DATE || "2026-09-16"));
@@ -222,7 +235,9 @@ const server = createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => {
-  console.log(`LedgerLens console  http://localhost:${PORT}`);
-  console.log(`  agent: ${AGENT_ID} (${AGENT_MODE}${AGENT_MODE === "mock" ? " - no LLM, template report" : ""})  case mode: ${CASE_MODE}  sarvam: ${process.env.SARVAM_API_KEY ? "on" : "off"}`);
-});
+detectBedrock().then(() =>
+  server.listen(PORT, () => {
+    console.log(`LedgerLens console  http://localhost:${PORT}`);
+    console.log(`  agent: ${AGENT_ID} (${AGENT_MODE}${AGENT_MODE === "mock" ? " - no LLM, template report" : ""})  llm: ${llmLabel()}  case mode: ${CASE_MODE}  sarvam: ${process.env.SARVAM_API_KEY ? "on" : "off"}`);
+  }),
+);

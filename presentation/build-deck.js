@@ -1,5 +1,3 @@
-// Builds presentation/LedgerLens.pptx. Not part of the app: needs pptxgenjs (`npm i pptxgenjs` in any folder, then
-// `node build-deck.js out.pptx`). Kept so the deck can be regenerated after editing the numbers.
 // Builds presentation/LedgerLens.pptx. Six slides: title, problem, architecture, demo, numbers, backup rubric map.
 // 16:9, 10in x 5.625in. Safe fonts only (Cambria titles, Calibri body, Courier New for identifiers).
 const pptxgen = require("pptxgenjs");
@@ -87,7 +85,7 @@ const bullets = (slide, items, o) =>
   text(s, "Today", { x: 0.5, y: 3.3, w: 4.3, h: 0.3, fontSize: 15, bold: true, color: C.coral });
   bullets(s, [
     "An analyst pulls entries from three systems by hand and writes the root cause",
-    "30 to 60 minutes per break (practitioner estimate, not a benchmark)",
+    "30 to 60 minutes per break (my own estimate from production, not a benchmark)",
     "The queue does not clear on high-volume days",
     "Settlement cash tied up, refunds delayed, audit exposure",
   ], { x: 0.5, y: 3.65, w: 4.3, h: 1.5 });
@@ -139,7 +137,7 @@ const bullets = (slide, items, o) =>
   s.background = { color: C.white };
   title(s, "Live demo: one settlement day, ten breaks");
   const steps = [
-    ["Match", "391 disbursals, ₹9.64 crore. One ES|QL STATS flags 10 breaks in ~40 ms. No join, no application code."],
+    ["Match", "391 disbursals, ₹9.64 crore. One ES|QL STATS flags 10 breaks in 55 ms. No join, no application code."],
     ["Investigate", "DSB-20260916-00297: rule fired, exact figures, evidence rows with IDs, the failing span in the trace, a resolved precedent."],
     ["Prove", "The Agent Builder trace waterfall: five tool calls with their ES|QL and rows. The model wrote prose only."],
     ["Admit", "DSB-20260916-00112, UNRESOLVED: ₹1,000 short, clean pipeline, no rule matches. The agent lists what it ruled out and escalates."],
@@ -172,7 +170,7 @@ const bullets = (slide, items, o) =>
   title(s, "What we measured", { color: C.white });
   const tiles = [
     ["14 / 14", "seeded breaks detected across 3 days, 0 false positives", "npm run verify, against data/answer-key.json"],
-    ["~40 ms", "to match 391 disbursals against the settlement file", "ES|QL took, ledgerlens.list_breaks"],
+    ["55 ms", "median ES|QL time to match 391 disbursals against the settlement file", "ES|QL took, BENCHMARKS.md, local ES 9.5.4"],
     ["100 %", "of figures and IDs traced to a tool result", "checked live on every report, shown as N / N"],
     ["0", "numbers computed by the LLM", "by construction; the checker would show red"],
   ];
@@ -183,7 +181,7 @@ const bullets = (slide, items, o) =>
     text(s, label, { x: x + 0.15, y: 2.15, w: 1.9, h: 0.6, fontSize: 11, color: C.white });
     text(s, src, { x: x + 0.15, y: 2.8, w: 1.9, h: 0.45, fontSize: 9, color: C.ice, italic: true });
   });
-  text(s, "Investigation time: seconds, measured on screen during the demo. Manual baseline: 30 to 60 minutes per break, a practitioner estimate, not a benchmark.", { x: 0.5, y: 3.45, w: 9, h: 0.45, fontSize: 11, color: C.ice });
+  text(s, "Investigation time: seconds, measured on screen during the demo. Manual baseline: 30 to 60 minutes per break, my own estimate from operating this class of system in production, not a benchmark.", { x: 0.5, y: 3.45, w: 9, h: 0.45, fontSize: 11, color: C.ice });
 
   text(s, "Deliberately out of scope", { x: 0.5, y: 4.0, w: 4.3, h: 0.3, fontSize: 13, bold: true, color: C.white });
   bullets(s, ["Live bank or PSP connections: seeded data keeps results reproducible for judging", "Moving funds: every write stays behind human approval"], { x: 0.5, y: 4.32, w: 4.3, h: 0.85, fontSize: 11, color: C.ice });

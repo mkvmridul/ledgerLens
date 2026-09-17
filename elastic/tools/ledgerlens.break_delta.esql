@@ -2,6 +2,8 @@
 // For one disbursal: the exact ledger vs settlement figures, the fee comparison, the rule that fired,
 // and every source ID (ledger event IDs, settlement row IDs, UTRs) so the report can cite them.
 // This is the only place a break is classified. The LLM receives the result verbatim.
+// Scalars used in comparisons (value_date, business_date) are aggregated with MAX so they are single-valued:
+// a comparison on a multivalued field is null in ES|QL and would silently fall through the CASE.
 // Params: ?disbursal_id (string)
 FROM ledgerlens-recon
 | WHERE disbursal_id == ?disbursal_id
@@ -18,11 +20,11 @@ FROM ledgerlens-recon
         settlement_rows     = SUM(s_n),
         expected_fee_paise  = SUM(l_fee),
         charged_fee_paise   = SUM(s_fee),
-        partner             = VALUES(partner),
-        rail                = VALUES(rail),
-        loan_id             = VALUES(loan_id),
-        business_date       = VALUES(business_date),
-        value_date          = VALUES(value_date),
+        partner             = MAX(partner),
+        rail                = MAX(rail),
+        loan_id             = MAX(loan_id),
+        business_date       = MAX(business_date),
+        value_date          = MAX(value_date),
         ledger_event_types  = VALUES(event_type),
         ledger_event_ids    = VALUES(event_id),
         settlement_row_ids  = VALUES(row_id),
