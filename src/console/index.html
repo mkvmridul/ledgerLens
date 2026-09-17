@@ -173,18 +173,128 @@ async function investigate(disbursal_id) {
   state = { ...state, active: disbursal_id, conversation_id: null, report: "", steps: [], facts: null, lang: "en", translations: {} };
   for (const tr of $("queue").querySelectorAll("tr.row")) tr.classList.toggle("active", tr.dataset.id === disbursal_id);
   $("invMeta").textContent = disbursal_id;
-  $("inv").innerHTML = `<div class="empty"><span class="spinner"></span>Agent is investigating <code>${disbursal_id}</code>… it will call the ES|QL tools in sequence and narrate the result.</div>`;
+  $("inv").innerHTML = `<div class="empty"><span class="spinner"></span>Agent is investigating <code>${disbursal_id}</code>… it will call the ES|QL tools and narrate the result.</div>`;
+  const t0 = Date.now();
   try {
-    const r = await api("/api/investigate", { disbursal_id });
-    state.conversation_id = r.conversation_id;
-    state.steps = r.steps;
-    state.report = r.message;
-    state.facts = extractFacts(r.steps);
-    $("invMeta").textContent = `${disbursal_id} · ${(r.elapsed_ms / 1000).toFixed(1)} s`;
-    render();
+    if (config.agent_mode === "mock") await blockingInvestigate(disbursal_id, t0);
+    else await streamInvestigate(disbursal_id, t0);
   } catch (e) {
-    $("inv").innerHTML = `<div class="note err">Investigation failed: ${esc(e.message)}</div>`;
+    try {
+      await blockingInvestigate(disbursal_id, t0);
+    } catch (e2) {
+      $("inv").innerHTML = `<div class="note err">Investigation failed: ${esc(e2.message)}</div>`;
+    }
   }
+}
+
+async function blockingInvestigate(disbursal_id, t0) {
+  const r = await api("/api/investigate", { disbursal_id });
+  state.conversation_id = r.conversation_id;
+  state.steps = r.steps;
+  state.report = r.message;
+  state.facts = extractFacts(r.steps);
+  $("invMeta").textContent = `${disbursal_id} · ${((r.elapsed_ms ?? Date.now() - t0) / 1000).toFixed(1)} s`;
+  render();
+}
+
+/** One SSE block -> { event, data }. Lines starting with ":" are padding comments; skip them. */
+function parseSse(block) {
+  let event = "message", data = "";
+  for (const line of block.split("\n")) {
+    if (!line || line.startsWith(":")) continue;
+    if (line.startsWith("event:")) event = line.slice(6).trim();
+    else if (line.startsWith("data:")) data += line.slice(5).trim();
+  }
+  if (!data) return null;
+  try {
+    const parsed = JSON.parse(data);
+    return { event, data: parsed?.data ?? parsed };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Stream one investigation. Text appears as it is written; the step list and the traceability
+ * check land on round_complete, whose payload is the same shape the blocking endpoint returns.
+ */
+async function streamInvestigate(disbursal_id, t0) {
+  const res = await fetch("/api/investigate/stream", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ disbursal_id }) });
+  if (!res.ok || !res.body) throw new Error(`stream unavailable (${res.status})`);
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "", live = "", messageId = null, ttft = null, finished = false;
+  const liveSteps = [];
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let i;
+    while ((i = buf.indexOf("\n\n")) >= 0) {
+      const evt = parseSse(buf.slice(0, i));
+      buf = buf.slice(i + 2);
+      if (!evt) continue;
+      if (evt.event === "conversation_id_set") {
+        state.conversation_id = evt.data.conversation_id ?? state.conversation_id;
+      } else if (evt.event === "reasoning") {
+        // The first reasoning event is a transient placeholder; the rest are the agent's narration.
+        if (evt.data.transient) continue;
+        liveSteps.push({ type: "reasoning", reasoning: evt.data.reasoning });
+        renderStreaming(liveSteps, live);
+      } else if (evt.event === "tool_call") {
+        liveSteps.push({ ...evt.data, type: "tool_call" });
+        renderStreaming(liveSteps, live);
+      } else if (evt.event === "tool_result") {
+        const step = liveSteps.find((s) => s.tool_call_id === evt.data.tool_call_id);
+        if (step) step.results = evt.data.results ?? [];
+        renderStreaming(liveSteps, live);
+      } else if (evt.event === "message_chunk") {
+        // Each interim narration is its own message; show only the one being written now.
+        if (evt.data.message_id !== messageId) {
+          messageId = evt.data.message_id;
+          live = "";
+        }
+        live += evt.data.text_chunk ?? "";
+        renderStreaming(liveSteps, live);
+      } else if (evt.event === "thinking_complete") {
+        ttft = evt.data.time_to_first_token ?? null;
+      } else if (evt.event === "round_complete") {
+        const round = evt.data.round ?? {};
+        state.steps = round.steps ?? [];
+        state.report = round.response?.message ?? live;
+        state.facts = extractFacts(state.steps);
+        const total = ((Date.now() - t0) / 1000).toFixed(1);
+        $("invMeta").textContent = ttft ? `${disbursal_id} · first token ${(ttft / 1000).toFixed(1)}s · total ${total}s` : `${disbursal_id} · ${total} s`;
+        finished = true;
+        render();
+      } else if (evt.event === "conversation_created") {
+        // Arrives after round_complete; the approve flow and the Kibana trace link both need it.
+        state.conversation_id = evt.data.conversation_id ?? state.conversation_id;
+        if (finished) render();
+      } else {
+        console.debug("sse event", evt.event, evt.data);
+      }
+    }
+  }
+  if (!finished) throw new Error("stream ended before the report was complete");
+}
+
+function renderStreaming(steps, text) {
+  $("inv").innerHTML = `
+    <div class="steps">${stepsHtml(steps)}</div>
+    <div class="trust"><span class="spinner"></span>Agent is investigating… every figure is checked against the tool results when it finishes.</div>
+    <div class="report">${markdown(esc(text))}</div>`;
+}
+
+function stepsHtml(steps) {
+  return steps.map((s, i) => {
+    if (s.type === "reasoning") return `<div class="step reasoning"><span class="n"></span><span>${esc(String(s.reasoning || "").slice(0, 160))}</span><span></span></div>`;
+    if (s.type !== "tool_call") return "";
+    const rows = (s.results || []).reduce((n, r) => n + (r?.data?.values?.length ?? (Array.isArray(r?.data) ? r.data.length : 0)), 0);
+    const p = Object.entries(s.params || {}).map(([k, v]) => `${k}=${String(v).slice(0, 60)}`).join(", ");
+    const pending = s.results ? (rows ? rows + " rows" : "") : '<span class="spinner"></span>';
+    return `<div class="step"><span class="n">${i + 1}</span><span><code>${esc(s.tool_id)}</code> <span class="meta">(${esc(p)})</span></span><span class="meta">${pending}</span></div>`;
+  }).join("");
 }
 
 function render(extraNote = "") {
@@ -192,13 +302,6 @@ function render(extraNote = "") {
   const text = state.lang === "en" ? state.report : state.translations[state.lang];
   const check = checkReport(text, state.facts);
   const toolCalls = state.steps.filter((s) => s.type === "tool_call");
-  const stepsHtml = state.steps.map((s, i) => {
-    if (s.type === "reasoning") return `<div class="step reasoning"><span class="n"></span><span>${esc(String(s.reasoning || "").slice(0, 160))}</span><span></span></div>`;
-    if (s.type !== "tool_call") return "";
-    const rows = (s.results || []).reduce((n, r) => n + (r?.data?.values?.length ?? (Array.isArray(r?.data) ? r.data.length : 0)), 0);
-    const p = Object.entries(s.params || {}).map(([k, v]) => `${k}=${String(v).slice(0, 60)}`).join(", ");
-    return `<div class="step"><span class="n">${i + 1}</span><span><code>${esc(s.tool_id)}</code> <span class="meta">(${esc(p)})</span></span><span class="meta">${rows ? rows + " rows" : ""}</span></div>`;
-  }).join("");
 
   const trust = check.total
     ? `<div class="trust ${check.complete ? "ok" : "bad"}">
@@ -220,7 +323,7 @@ function render(extraNote = "") {
     </div>`;
 
   $("inv").innerHTML = `
-    <div class="steps">${stepsHtml}</div>
+    <div class="steps">${stepsHtml(state.steps)}</div>
     ${trust}
     <div class="report">${markdown(annotate(text, check))}</div>
     ${actions}
