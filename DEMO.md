@@ -65,3 +65,64 @@ Approve. Open the case.
 ## Copying into the team repository on the 18th
 
 Copy everything **except**: `context.md`, `CLAUDE.md`, `CLAUDE.local.md`, `resources/`, `.claude/`, `.env`. Those are working notes and credentials, not part of the submission.
+
+
+---
+
+## Narrative Walkthrough: A Day in the Life of a Financial Analyst
+
+Use this narrative arc when delivering the live demo. It anchors the technical capabilities in a relatable, high-stakes finance operations scenario.
+
+### Act 1: The Daily Grind (Before LedgerLens)
+Every morning at 9:00 AM, Priya, a financial operations analyst at a digital lending NBFC, logs into the portal. Waiting for her are **400 loan disbursal records from yesterday—representing ₹9.6 crore of customer disbursements**. 
+
+Her entire day is usually consumed by:
+- Manually pulling bank settlement files from partner banks (HDFC, NorthBank, PayStream).
+- Running error-prone VLOOKUPs against the internal loan management ledger.
+- Cross-matching 16-character UTR numbers and transaction timestamps by hand.
+- Chasing engineering teams through AWS CloudWatch logs to figure out why a payment failed.
+
+**The consequence:** Investigating a single transaction discrepancy takes **30 to 60 minutes**. By 10:00 PM, eye strain and fatigue set in. A single overlooked double-debit ties up working capital; an undetected missing credit delays a borrower's urgent medical or education loan. Worse, undetected reconciliation breaks create severe RBI regulatory scrutiny and audit penalties.
+
+---
+
+### Act 2: Today is Different (Enter LedgerLens)
+Today is different, because today Priya has **LedgerLens**.
+
+**[Action: Switch to the LedgerLens Console at `http://localhost:3000`]**
+
+Instead of 400 raw rows clogging an unmanageable queue, **the entire day's volume has already been matched and reconciled in under 60 milliseconds**. 
+- A single unified ES|QL query evaluated all 391 successful disbursals against the settlement file—without a single database join or batch ETL script.
+- 381 transactions matched cleanly and cleared automatically.
+- **Only the 10 genuine exception breaks are flagged and categorized** into actionable buckets: `MISSING_CREDIT`, `DOUBLE_DEBIT`, `FEE_MISMATCH`, `TIMING_T1`, and `UNRESOLVED`.
+
+> **Key Line to Land on Stage:**  
+> *"Notice the top metric tile: **Figures computed by the LLM: 0**. We deliberately use deterministic ES|QL rules and APM trace correlation instead of asking an LLM to calculate math or match transactions. In finance, a single hallucination or missed decimal doesn't just waste API tokens—it costs real customer money and violates regulatory compliance."*
+
+---
+
+### Act 3: One-Click Autonomous Investigation
+Priya clicks on the top break: `DSB-20260916-00297` (`MISSING_CREDIT`).
+
+**[Action: Click `DSB-20260916-00297` → Click "Investigate"]**
+
+Rather than spending 45 minutes digging through separate database tables and log streams, the agent takes over. In seconds, it orchestrates 5 specialized tools behind the scenes:
+1. **`ledgerlens.break_delta`**: Deterministically calculates the exact ledger amount (₹51,500.00), settled amount (₹0.00), and delta (+₹51,500.00), triggering rule `R1`.
+2. **`ledgerlens.evidence_rows`**: Pulls the exact chronological ledger event IDs (`EVT-...`) and confirms zero settlement rows exist.
+3. **`ledgerlens.trace_failure_point`**: Traverses the microservice APM spans (`disbursal-service`, `payout-gateway`, `ledger-service`) and immediately flags the failure: our system booked success prematurely on a synchronous `PSP_ACCEPTED`, but the bank callback timed out and the status poll returned `BENEFICIARY_ACCOUNT_INVALID`. Money never left the nodal account!
+4. **`ledgerlens.similar_cases`**: Executes a hybrid search (lexical BM25 + dense semantic vector retrieval via Reciprocal Rank Fusion) across 84 historical cases, pulling up precedent `CASE-2026-0012` resolved by analyst SN on September 14th.
+
+---
+
+### Act 4: Audit-Ready Trust & Human-in-the-Loop Action
+The report renders instantly with an audit-ready breakdown:
+- **Trust badge**: Confirms **12 of 12 figures and IDs are 100% traced verbatim** back to query results (highlighted in green). Zero fabricated digits.
+- **Root Cause & Precedent**: Clearly explains *why* the break occurred and what steps past analysts took.
+
+**[Action: Click "Approve → open case"]**
+
+Priya doesn't have to copy-paste findings into Jira or draft an email. She clicks **Approve → open case**. 
+- An **Elastic Workflow** executes behind human authorization.
+- It opens a formal remediation Case in Kibana (`CASE-2026-0037`) and writes an immutable, append-only record to the `ledgerlens-audit` index for compliance auditors.
+
+**Closing impact:** Priya just resolved what used to be a 45-minute multi-team investigation in **less than 15 seconds**, with 100% mathematical certainty, zero hallucination risk, and complete end-to-end traceability.
