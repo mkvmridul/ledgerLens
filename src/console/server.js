@@ -47,13 +47,16 @@ const queryOf = (id) => readFileSync(join(ROOT, "elastic", "tools", tools.find((
 // ---------------------------------------------------------------- data
 
 async function summary(business_date) {
-  const totals = await esql(
-    `FROM ledgerlens-recon
-     | WHERE source == "ledger" AND event_type == "DISBURSAL_SUCCEEDED" AND business_date == ?business_date
-     | STATS disbursals = COUNT(*), total_paise = SUM(amount_paise), partners = COUNT_DISTINCT(partner)`,
-    { business_date },
-  );
-  const breaks = await esql(queryOf("ledgerlens.list_breaks"), { business_date });
+  // Independent queries against the same index: no reason to wait for one before starting the other.
+  const [totals, breaks] = await Promise.all([
+    esql(
+      `FROM ledgerlens-recon
+       | WHERE source == "ledger" AND event_type == "DISBURSAL_SUCCEEDED" AND business_date == ?business_date
+       | STATS disbursals = COUNT(*), total_paise = SUM(amount_paise), partners = COUNT_DISTINCT(partner)`,
+      { business_date },
+    ),
+    esql(queryOf("ledgerlens.list_breaks"), { business_date }),
+  ]);
   const t = totals.rows[0] ?? { disbursals: 0, total_paise: 0, partners: 0 };
   return {
     business_date,
