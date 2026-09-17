@@ -28,6 +28,16 @@ const PARTNERS = [
   { name: "MERIDIAN", code: "MRDN", kind: "bank", rails: ["IMPS", "NEFT"] },
 ];
 
+/**
+ * Partner IFSC codes and bank short names for realistic bank-statement narrations.
+ * Based on real Indian bank statement narration patterns (NEFT DR-{IFSC}-{NAME}-{BANK}-{REF}-{PURPOSE}).
+ */
+const PARTNER_META = {
+  PAYSTREAM: { ifsc: "PAYS0001234", bank_short: "PAYSTRM",  code: "PAYS" },
+  NORTHBANK: { ifsc: "NRTH0005678", bank_short: "NRTHBK",   code: "NRTH" },
+  MERIDIAN:  { ifsc: "MRDN0009012", bank_short: "MERIDN",   code: "MRDN" },
+};
+
 /** Contracted fee per transfer, in paise, GST included (18% on base). */
 export const RATE_CARD_PAISE = { IMPS: 590, NEFT: 295, RTGS: 2360 };
 const RATE_CARD_BASE_PAISE = { IMPS: 500, NEFT: 250, RTGS: 2000 };
@@ -104,6 +114,41 @@ const pad = (n, w) => String(n).padStart(w, "0");
 export const inr = (paise) =>
   "₹" + (paise / 100).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
+/**
+ * Generate a realistic bank-statement narration for a settlement row.
+ * Five format variants per rail reflect the varied styles seen in real PSP settlement files
+ * and HDFC / ICICI / Kotak statement exports (e.g. "NEFT DR-UBIN0539686-RAJU DUBEY-NETBANK,MUM-N155180555427618-PERSONAL").
+ * Uses rng so outputs are deterministic and varied across transactions.
+ */
+function makeNarration(rng, { rail, partner, utr, loan_id, disbursal_id, amount_paise }) {
+  const meta = PARTNER_META[partner] ?? { ifsc: "UNKN0000000", bank_short: "UNKN", code: "UNKN" };
+  const amt = (amount_paise / 100).toFixed(2);
+  const formats = {
+    IMPS: [
+      () => `IMPS/P2A/${utr}/${loan_id}/LOAN DISB`,
+      () => `IMPS P2A ${utr} LOAN DISBURSEMENT ${loan_id}`,
+      () => `IMPS-P2A-${utr}-PERSONAL LOAN DISB-${disbursal_id}`,
+      () => `IMPS CR ${utr} ${meta.bank_short} LOAN DISB INR ${amt}`,
+      () => `${meta.code}IMPS${utr}LNDSB${loan_id.replace("LN-", "")}`,
+    ],
+    NEFT: [
+      () => `NEFT DR-${meta.ifsc}-LOAN DISB-${meta.bank_short}-${utr}-PERSONAL LOAN`,
+      () => `NEFT/OUTWARD/${utr}/${loan_id}/LOAN DISBURSEMENT`,
+      () => `NEFT CR ${utr} LOAN DISB ${loan_id} ${meta.code}`,
+      () => `NEFT-${utr}-PERSONAL LOAN DISBURSAL-${disbursal_id}`,
+      () => `NEFT DR ${utr} INR ${amt} LOAN DISB ${loan_id}`,
+    ],
+    RTGS: [
+      () => `RTGS/OUTWARD/${utr}/LOAN DISBURSEMENT/${loan_id}`,
+      () => `RTGS CR ${utr} PERSONAL LOAN DISB ${loan_id}`,
+      () => `RTGS-${utr}-LOAN DISBURSAL-${disbursal_id}`,
+      () => `RTGS OUTWARD ${utr} INR ${amt} LOAN DISB`,
+      () => `${meta.code} RTGS DISB ${utr} ${loan_id}`,
+    ],
+  };
+  return rng.pick(formats[rail] || formats.NEFT)();
+}
+
 // ---------------------------------------------------------------- generator
 
 export function generate() {
@@ -152,8 +197,16 @@ export function generate() {
       // Amount: personal-loan disbursals ₹5,000 to ₹5,00,000 in ₹100 steps. RTGS only above ₹2,00,000.
       let amount_paise = rng.int(50, 5000) * 100 * 100;
       let rail = rng.pick(partner.rails.filter((r) => r !== "RTGS" || amount_paise >= 20_000_000));
+      // Rail & Amount: rail-appropriate disbursals. IMPS ₹10k–₹5L, NEFT ₹5k–₹10L, RTGS ₹2L–₹50L.
+      let rail = rng.pick(partner.rails);
       if (brk?.variant === "WRONG_RAIL_SLAB") rail = "NEFT"; // needs a NEFT transfer billed at IMPS slab
       if (brk?.variant === "GST_APPLIED_TWICE") rail = "IMPS";
+      let amount_paise =
+        rail === "RTGS"
+          ? rng.int(2000, 50000) * 100 * 100
+          : rail === "IMPS"
+          ? rng.int(100, 5000) * 100 * 100
+          : rng.int(50, 10000) * 100 * 100;
       if (brk?.variant === "SHORT_CREDIT_NO_SIGNAL") amount_paise = Math.max(amount_paise, 5_000_000);
       const expected_fee_paise = RATE_CARD_PAISE[rail];
 
@@ -241,7 +294,7 @@ export function generate() {
           pushSpan({ ts: succeededAt, name: "ledger.append DISBURSAL_SUCCEEDED", type: "db", service: "ledger-service", duration_ms: rng.int(4, 11) });
           recon.push({ source: "ledger", event_id: eventId(), event_type: "DISBURSAL_SUCCEEDED", sequence: 2, "@timestamp": succeededAt, amount_paise, expected_fee_paise, utr: succeededUtr, description: `Disbursal ${inr(amount_paise)} succeeded via ${partner.name}/${rail}, UTR ${succeededUtr}`, ...base });
           for (const u of [utr, utr2]) {
-            settlementRows.push(settlementRow({ settlement_date: day, value_date: day, partner: partner.name, rail, disbursal_id, utr: u, amount_paise, fee_paise: expected_fee_paise, "@timestamp": istToIso(day, 23, 45, 0), narration: `${rail}/P2A/${u}/LOAN DISB/${disbursal_id}`, business_date: day, loan_id }));
+            settlementRows.push(settlementRow({ settlement_date: day, value_date: day, partner: partner.name, rail, disbursal_id, utr: u, amount_paise, fee_paise: expected_fee_paise, "@timestamp": istToIso(day, 23, 45, 0), narration: makeNarration(rng, { rail, partner: partner.name, utr: u, loan_id, disbursal_id, amount_paise }), business_date: day, loan_id }));
           }
           failure_spans = [`psp.transfer ${partner.name}`];
           root_cause = "Gateway timed out on attempt 1 (HTTP 504) and the retry was sent without an idempotency key. Both attempts were executed by the partner: two UTRs, two settlement rows, one ledger success.";
@@ -273,7 +326,7 @@ export function generate() {
           pushSpan({ ts: succeededAt, name: "ledger.append DISBURSAL_SUCCEEDED", type: "db", service: "ledger-service", duration_ms: rng.int(4, 11) });
           recon.push({ source: "ledger", event_id: eventId(), event_type: "DISBURSAL_SUCCEEDED", sequence: 2, "@timestamp": succeededAt, amount_paise, expected_fee_paise, utr, description: `Disbursal ${inr(amount_paise)} succeeded via ${partner.name}/${rail}, UTR ${utr}`, ...base });
           const fee_paise = variant === "WRONG_RAIL_SLAB" ? RATE_CARD_PAISE.IMPS : RATE_CARD_BASE_PAISE[rail] + 2 * (RATE_CARD_PAISE[rail] - RATE_CARD_BASE_PAISE[rail]);
-          settlementRows.push(settlementRow({ settlement_date: day, value_date: day, partner: partner.name, rail, disbursal_id, utr, amount_paise, fee_paise, "@timestamp": istToIso(day, 23, 45, 0), narration: `${rail}/P2A/${utr}/LOAN DISB/${disbursal_id}`, business_date: day, loan_id }));
+          settlementRows.push(settlementRow({ settlement_date: day, value_date: day, partner: partner.name, rail, disbursal_id, utr, amount_paise, fee_paise, "@timestamp": istToIso(day, 23, 45, 0), narration: makeNarration(rng, { rail, partner: partner.name, utr, loan_id, disbursal_id, amount_paise }), business_date: day, loan_id }));
           root_cause = variant === "WRONG_RAIL_SLAB"
             ? `Partner charged the IMPS slab (${inr(RATE_CARD_PAISE.IMPS)}) on a NEFT transfer contracted at ${inr(RATE_CARD_PAISE.NEFT)}. Principal matched; pipeline clean. Commercial fee dispute, not a payment failure.`
             : `Partner applied GST twice on the ${rail} fee (${inr(fee_paise)} charged vs ${inr(expected_fee_paise)} contracted). Principal matched; pipeline clean. Commercial fee dispute, not a payment failure.`;
@@ -287,7 +340,7 @@ export function generate() {
           pushSpan({ ts: succeededAt, name: "ledger.append DISBURSAL_SUCCEEDED", type: "db", service: "ledger-service", duration_ms: rng.int(4, 11) });
           recon.push({ source: "ledger", event_id: eventId(), event_type: "DISBURSAL_SUCCEEDED", sequence: 2, "@timestamp": succeededAt, amount_paise, expected_fee_paise, utr, description: `Disbursal ${inr(amount_paise)} succeeded via ${partner.name}/${rail}, UTR ${utr}`, ...base });
           value_date = nextDay(day);
-          settlementRows.push(settlementRow({ settlement_date: value_date, value_date, partner: partner.name, rail, disbursal_id, utr, amount_paise, fee_paise: expected_fee_paise, "@timestamp": istToIso(value_date, 23, 45, 0), narration: `${rail}/P2A/${utr}/LOAN DISB/${disbursal_id}`, business_date: day, loan_id }));
+          settlementRows.push(settlementRow({ settlement_date: value_date, value_date, partner: partner.name, rail, disbursal_id, utr, amount_paise, fee_paise: expected_fee_paise, "@timestamp": istToIso(value_date, 23, 45, 0), narration: makeNarration(rng, { rail, partner: partner.name, utr, loan_id, disbursal_id, amount_paise }), business_date: day, loan_id }));
           root_cause = `Transfer initiated at ${new Date(new Date(t0).getTime() + IST_OFFSET_MS).toISOString().slice(11, 16)} IST, after the partner's 23:00 settlement cut-off. Credit is present in the ${value_date} settlement file with value date ${value_date}. Self-clearing; no action.`;
           break;
         }
@@ -298,7 +351,7 @@ export function generate() {
           const succeededAt = addMs(transferStart, transferMs + callbackDelay + 60);
           pushSpan({ ts: succeededAt, name: "ledger.append DISBURSAL_SUCCEEDED", type: "db", service: "ledger-service", duration_ms: rng.int(4, 11) });
           recon.push({ source: "ledger", event_id: eventId(), event_type: "DISBURSAL_SUCCEEDED", sequence: 2, "@timestamp": succeededAt, amount_paise, expected_fee_paise, utr, description: `Disbursal ${inr(amount_paise)} succeeded via ${partner.name}/${rail}, UTR ${utr}`, ...base });
-          settlementRows.push(settlementRow({ settlement_date: day, value_date: day, partner: partner.name, rail, disbursal_id, utr, amount_paise: amount_paise - 100_000, fee_paise: expected_fee_paise, "@timestamp": istToIso(day, 23, 45, 0), narration: `${rail}/P2A/${utr}/LOAN DISB/${disbursal_id}`, business_date: day, loan_id }));
+          settlementRows.push(settlementRow({ settlement_date: day, value_date: day, partner: partner.name, rail, disbursal_id, utr, amount_paise: amount_paise - 100_000, fee_paise: expected_fee_paise, "@timestamp": istToIso(day, 23, 45, 0), narration: makeNarration(rng, { rail, partner: partner.name, utr, loan_id, disbursal_id, amount_paise: amount_paise - 100_000 }), business_date: day, loan_id }));
           root_cause = "Unknown by design. Settlement credit is ₹1,000.00 short with a single row, correct fee, correct value date and a clean pipeline. No rule matches and no evidence in the indexed data explains the shortfall. Must escalate to a human with the partner.";
           break;
         }
@@ -309,7 +362,7 @@ export function generate() {
           const succeededAt = addMs(transferStart, transferMs + callbackDelay + 60);
           pushSpan({ ts: succeededAt, name: "ledger.append DISBURSAL_SUCCEEDED", type: "db", service: "ledger-service", duration_ms: rng.int(4, 11) });
           recon.push({ source: "ledger", event_id: eventId(), event_type: "DISBURSAL_SUCCEEDED", sequence: 2, "@timestamp": succeededAt, amount_paise, expected_fee_paise, utr, description: `Disbursal ${inr(amount_paise)} succeeded via ${partner.name}/${rail}, UTR ${utr}`, ...base });
-          settlementRows.push(settlementRow({ settlement_date: day, value_date: day, partner: partner.name, rail, disbursal_id, utr, amount_paise, fee_paise: expected_fee_paise, "@timestamp": istToIso(day, 23, 45, 0), narration: `${rail}/P2A/${utr}/LOAN DISB/${disbursal_id}`, business_date: day, loan_id }));
+          settlementRows.push(settlementRow({ settlement_date: day, value_date: day, partner: partner.name, rail, disbursal_id, utr, amount_paise, fee_paise: expected_fee_paise, "@timestamp": istToIso(day, 23, 45, 0), narration: makeNarration(rng, { rail, partner: partner.name, utr, loan_id, disbursal_id, amount_paise }), business_date: day, loan_id }));
         }
       }
 
@@ -388,32 +441,90 @@ function generateResolvedLibrary(rng, priorDayBreaks) {
   const analysts = ["AK", "PR", "SN", "VM", "RJ"];
   const templates = {
     MISSING_CREDIT: [
+      // 1. Formal partner-escalation POV
       (c) => `Loan payout for ${c.disbursal_id} shows success in our books but ${c.partner} never credited the beneficiary. Their status API said FAILED (${c.reason}) about half an hour after we had already booked success.`,
+      // 2. Analyst data observation
       (c) => `Booked ${c.amount} as disbursed, nothing in the ${c.partner} settlement report. Turned out the callback never came and the poll came back failed: ${c.reason}.`,
+      // 3. Bank statement trace language
       (c) => `${c.rail} transfer marked done on our side on the ACCEPTED response. Bank rejected downstream (${c.reason}). No debit on the nodal account.`,
+      // 4. Ops shorthand
       (c) => `Ghost success. Ledger says money went out, partner file is empty for this ref. Root cause was the premature success write on ACCEPTED; PSP later reported ${c.reason}.`,
+      // 5. EOD reconciliation report style
+      (c) => `EOD recon flagged ${c.disbursal_id}: ledger carries DISBURSAL_SUCCEEDED for ${c.amount} via ${c.partner}/${c.rail}, but the day's settlement file has no corresponding row. Status poll at T+30 min returned FAILED — ${c.reason}. Nodal account untouched.`,
+      // 6. Partner ops ticket / escalation language
+      (c) => `Escalated to ${c.partner} ops: ${c.disbursal_id} shows zero credits in the ${c.rail} settlement despite a synchronous ACCEPTED. PSP status poll returned FAILED – ${c.reason}. Requesting confirmation that no debit occurred on the nodal account.`,
+      // 7. Ops team informal / chat tone
+      (c) => `${c.partner} said ACCEPTED, we booked it, they never sent it. ${c.reason} is what killed it downstream. Zero entry in the settlement file. Nodal untouched.`,
+      // 8. Post-RCA compliance note
+      (c) => `Settlement exception on ${c.disbursal_id}: platform wrote DISBURSAL_SUCCEEDED on receipt of synchronous ACCEPTED from ${c.partner}. Terminal callback was never received. Manual status poll confirmed FAILED – ${c.reason}. Settlement row count: 0. Ledger reversal required.`,
     ],
     DOUBLE_DEBIT: [
+      // 1. Customer impact POV
       (c) => `Customer got paid twice on ${c.disbursal_id}. First call to ${c.partner} hit a 504, our gateway retried with a new request id, both went through at the bank.`,
+      // 2. Bank statement two-UTR observation
       (c) => `Two UTRs against one disbursal in the ${c.partner} statement. Gateway timeout followed by a retry that did not reuse the idempotency key.`,
+      // 3. Reversal initiation note
       (c) => `Duplicate payout of ${c.amount}. Timeout on attempt one, attempt two accepted, partner executed both. Raised reversal with ${c.partner} for the first UTR.`,
+      // 4. Technical retry description
       (c) => `Double credit to beneficiary via ${c.rail}. Retry storm after upstream 504; no idempotency on the retry path.`,
+      // 5. EOD report format
+      (c) => `Double debit flag: ${c.disbursal_id} appears twice in the ${c.partner}/${c.rail} settlement extract. Ledger has one DISBURSAL_SUCCEEDED; bank has two rows, two UTRs. Idempotency key absent on the retry after a gateway timeout. Excess debit: ${c.amount}. Reversal in progress.`,
+      // 6. Partner escalation formal
+      (c) => `Duplicate settlement detected for ${c.disbursal_id}. ${c.partner} settlement file shows 2 rows – two separate UTRs, both marked settled. Root cause: HTTP 504 on attempt 1, retry sent without idempotency key, both executed. Raising reversal request for the earlier UTR.`,
+      // 7. Ops informal
+      (c) => `We paid the customer twice for ${c.disbursal_id}. 504 on the first try, gateway retried with a fresh request ID, ${c.partner} processed both. Two nodal debits, two credits to the beneficiary.`,
+      // 8. Monitoring / system alert format
+      (c) => `DOUBLE_DEBIT | ref: ${c.disbursal_id} | partner: ${c.partner} | rail: ${c.rail} | settlement_rows: 2 | excess: ${c.amount} | cause: retry_without_idempotency | action: reversal_raised`,
     ],
     FEE_MISMATCH: [
+      // 1. Wrong slab identification
       (c) => `${c.partner} billed the IMPS slab on a NEFT payout for ${c.disbursal_id}. Principal fine, fee ${c.feeDelta} over the rate card.`,
+      // 2. GST double-application
       (c) => `Fee line in the settlement file does not match the contract for ${c.rail}. Looks like GST got applied twice on the base fee. Principal reconciles.`,
+      // 3. Monthly dispute log
       (c) => `Commercial issue only: charged ${c.chargedFee} against contracted ${c.expectedFee} on ${c.disbursal_id}. Added to the monthly fee dispute with ${c.partner}.`,
+      // 4. "Amount matched, fee didn't"
       (c) => `Wrong tariff applied by ${c.partner}. Amount matched to the paisa, fee did not. Not a payment failure.`,
+      // 5. Commercial dispute email
+      (c) => `Raising commercial dispute for ${c.disbursal_id}: ${c.partner} billed ${c.chargedFee} in transaction charges against our contracted rate of ${c.expectedFee} for ${c.rail} transfers. Delta ${c.feeDelta} to be credited back. Principal fully reconciled.`,
+      // 6. Analyst informal
+      (c) => `Fee-only issue – principal is spot-on but ${c.partner} billed us wrong. We are on ${c.expectedFee} per ${c.rail} transfer per SLA; they charged ${c.chargedFee}. Adding to the fee dispute tracker, no reversal needed.`,
+      // 7. EOD variance report
+      (c) => `Fee variance on ${c.disbursal_id}: principal matched (${c.amount}), but ${c.partner} applied ${c.chargedFee} vs contracted ${c.expectedFee} for ${c.rail} rail. Overcharge: ${c.feeDelta}. Pipeline clean; this is a commercial exception, not a payment failure.`,
+      // 8. Formal audit note
+      (c) => `Transaction fee discrepancy: ${c.disbursal_id}. Principal settlement correct at ${c.amount}. Fee charged by ${c.partner}: ${c.chargedFee}; rate card for ${c.rail}: ${c.expectedFee}. Variance: ${c.feeDelta}. Logged in monthly reconciliation dispute register. No action on principal.`,
     ],
     TIMING_T1: [
+      // 1. Late evening with T+1 value date
       (c) => `Payout for ${c.disbursal_id} went out late in the evening, after the ${c.partner} 23:00 cut-off. Credit showed up in the next day's file with a T+1 value date. Cleared itself.`,
+      // 2. Found in next morning's file
       (c) => `Missing from the day's statement, present in the next morning's. Initiated post cut-off. No action needed.`,
+      // 3. Next settlement cycle
       (c) => `Value date one day after our business date on ${c.rail}. Late initiation, next settlement cycle. Closed as timing.`,
+      // 4. Looked like missing credit initially
       (c) => `Looked like a missing credit at first but the ${c.partner} file for the following day had it. Late-night disbursal.`,
+      // 5. Ops informal confirmation
+      (c) => `Went out after ${c.partner} cut-off on ${c.rail}. No action needed – it shows in tomorrow's file with T+1 value date. Not a break, just timing.`,
+      // 6. EOD timing exception report
+      (c) => `Timing exception: ${c.disbursal_id} initiated after ${c.partner}'s 23:00 IST cut-off. Credit is present in the subsequent business day settlement file with correct amount ${c.amount} and T+1 value date. Auto-clears; no case required.`,
+      // 7. Partner confirmation language
+      (c) => `Confirmed with ${c.partner}: ${c.disbursal_id} processed after the ${c.rail} settlement window. Transaction valid, will appear in the next cycle. Value date reflects actual settlement. Closing as TIMING_T1, no reversal.`,
+      // 8. Analyst shorthand
+      (c) => `T+1 carry-over on ${c.partner}/${c.rail}. Post-23:00 initiation. Reconciles against next day's file. Not a break — timing only.`,
     ],
     UNRESOLVED: [
+      // 1. Short credit, partner refunded
       (c) => `Short credit on ${c.disbursal_id}: partner settled ${c.settled} against ${c.amount} booked. Fee correct, single row, pipeline clean. Partner ops confirmed a manual adjustment on their side; refunded the difference after 6 days.`,
+      // 2. Escalated, clerical error
       (c) => `Unexplained ${c.deltaAbs} shortfall in the ${c.partner} settlement. Nothing in traces or the statement explained it. Escalated to partner; resolved as a partner-side clerical error.`,
+      // 3. Formal escalation note
+      (c) => `Unexplained principal shortfall on ${c.disbursal_id}: ledger ${c.amount}, settled ${c.settled}, delta ${c.deltaAbs}. Fee correct. Single settlement row. Pipeline clean — all spans successful, no error codes. No classification rule applies. Escalated to ${c.partner} ops with UTR for investigation.`,
+      // 4. Analyst informal
+      (c) => `No idea why ${c.partner} shorted us by ${c.deltaAbs} on ${c.disbursal_id}. Fee is right, one row, traces all green. Nothing in our data explains this. Had to go directly to their ops team.`,
+      // 5. Post-resolution note
+      (c) => `Resolved: shortfall of ${c.deltaAbs} on ${c.disbursal_id} was a manual routing adjustment by ${c.partner}, not reflected in the settlement narration. Difference refunded to nodal account after escalation. No recurring pattern; monitoring ongoing.`,
+      // 6. EOD escalation flag
+      (c) => `UNRESOLVED flag: ${c.disbursal_id} — single settlement row, amount ${c.settled} vs ledger ${c.amount}, variance ${c.deltaAbs}. Fee delta zero. Value date matches business date. All pipeline spans succeeded. No rule matches. Manual partner review required. Nodal exposure: ${c.deltaAbs}.`,
     ],
   };
   const reasons = ["BENEFICIARY_ACCOUNT_INVALID", "INSUFFICIENT_NODAL_BALANCE"];
@@ -466,11 +577,19 @@ function generateResolvedLibrary(rng, priorDayBreaks) {
   const mix = ["MISSING_CREDIT", "MISSING_CREDIT", "DOUBLE_DEBIT", "DOUBLE_DEBIT", "FEE_MISMATCH", "FEE_MISMATCH", "TIMING_T1", "TIMING_T1", "UNRESOLVED"];
   for (const [ym, days] of months) {
     for (let k = 0; k < 8; k++) {
+    for (let k = 0; k < 20; k++) {
       const type = mix[(seq + k) % mix.length];
       const day = `${ym}-${pad(rng.int(1, days), 2)}`;
       const partner = rng.pick(PARTNERS);
       const rail = type === "FEE_MISMATCH" && rng.chance(0.5) ? "NEFT" : rng.pick(partner.rails.filter((r) => r !== "RTGS"));
       const amount_paise = rng.int(50, 5000) * 100 * 100;
+      const rail = type === "FEE_MISMATCH" && rng.chance(0.5) ? "NEFT" : rng.pick(partner.rails);
+      const amount_paise =
+        rail === "RTGS"
+          ? rng.int(2000, 50000) * 100 * 100
+          : rail === "IMPS"
+          ? rng.int(100, 5000) * 100 * 100
+          : rng.int(50, 10000) * 100 * 100;
       const expectedFee = RATE_CARD_PAISE[rail];
       const chargedFee = type === "FEE_MISMATCH" ? (rail === "NEFT" ? RATE_CARD_PAISE.IMPS : RATE_CARD_BASE_PAISE[rail] + 2 * (RATE_CARD_PAISE[rail] - RATE_CARD_BASE_PAISE[rail])) : expectedFee;
       const settled = type === "MISSING_CREDIT" ? 0 : type === "DOUBLE_DEBIT" ? 2 * amount_paise : type === "UNRESOLVED" ? amount_paise - rng.int(1, 25) * 10_000 : amount_paise;
