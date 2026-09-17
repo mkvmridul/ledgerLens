@@ -87,6 +87,19 @@ If you could not run it, say that instead.
 
 Run lint and tests before reporting a task complete.
 
+## 7. Optimization tracking
+
+`OPTIMIZATION.md` is the running record of where latency goes and what is left
+to do about it. It separates Agent Builder / LLM latency (the demo problem)
+from Elasticsearch latency (the scale problem).
+
+- Read it before proposing any performance work, so we do not re-litigate
+  something already measured or already ruled out.
+- After changing anything that affects latency, update the relevant row with
+  the number you measured, and say how many runs it came from.
+- `CHANGELOG.md` records what changed and why. `OPTIMIZATION.md` records where
+  the time goes and what is still open. Keep them consistent.
+
 ## 8. Other instruction files in this repository
 
 This repository is shared. It will accumulate instruction files from other
