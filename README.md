@@ -16,7 +16,7 @@ Three systems must agree about every disbursal: the event-sourced **ledger**, th
 
 1. **Matches** a day's ledger against the settlement file with one ES|QL `STATS ... BY disbursal_id` over a unified index. No join, no application code. 391 disbursals in 55 ms median ES|QL time on a local Elasticsearch 9.5.4 (see [BENCHMARKS.md](BENCHMARKS.md), regenerated on the cloud project on the 18th).
 2. **Classifies** each break with an ES|QL `CASE` rule table: `MISSING_CREDIT`, `DOUBLE_DEBIT`, `FEE_MISMATCH`, `TIMING_T1`, or `UNRESOLVED` when no rule explains it.
-3. **Investigates** one break with an Agent Builder agent that calls five ES|QL tools in sequence: exact figures and rule, evidence rows with IDs, the failing span in the pipeline trace, and a hybrid-search precedent from past resolved cases.
+3. **Investigates** one break with an Agent Builder agent that calls five ES|QL tools: exact figures and rule first, then evidence rows and the failing span in the pipeline trace together in the same turn (neither depends on the other), then a hybrid-search precedent from past resolved cases.
 4. **Reports** in a fixed audit-ready format. Every amount and identifier is copied verbatim from a tool result. The console checks this live and highlights each figure to the tool it came from.
 5. **Acts**, behind a human. On "approve", an Elastic Workflow opens a Kibana case and writes an append-only audit record. The agent cannot do this on its own.
 
