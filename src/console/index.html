@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>LedgerLens</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --ink: #14171f; --muted: #5b6270; --line: #e3e6eb;
+    --accent: #0b64c0; --ok: #1a7f4b; --ok-bg: #e3f5ea; --bad: #b3261e; --bad-bg: #fbe9e7; --warn: #8a5a00; --warn-bg: #fff3d6;
+    --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f1218; --panel: #171b23; --ink: #e8eaf0; --muted: #98a0ad; --line: #2a303b;
+      --accent: #5aa2ee; --ok: #5ccb8a; --ok-bg: #143323; --bad: #ff8a80; --bad-bg: #3a1d1a; --warn: #f0c060; --warn-bg: #3a2f14;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 -apple-system, "Segoe UI", Inter, Roboto, sans-serif; }
+  header { display: flex; align-items: center; gap: 16px; padding: 12px 20px; border-bottom: 1px solid var(--line); background: var(--panel); }
+  header h1 { font-size: 18px; margin: 0; letter-spacing: .2px; }
+  header h1 span { color: var(--muted); font-weight: 400; font-size: 13px; margin-left: 8px; }
+  header .spacer { flex: 1; }
+  header input[type=date] { font: inherit; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); }
+  .badge { font-size: 12px; padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+  .badge.mock { background: var(--bad-bg); color: var(--bad); border-color: var(--bad); font-weight: 600; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; padding: 16px 20px 0; }
+  .tile { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+  .tile .k { color: var(--muted); font-size: 12px; }
+  .tile .v { font-size: 22px; font-weight: 600; margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .tile .s { color: var(--muted); font-size: 11px; margin-top: 2px; }
+  .tile.zero .v { color: var(--ok); }
+  main { display: grid; grid-template-columns: minmax(360px, 5fr) minmax(420px, 7fr); gap: 16px; padding: 16px 20px 24px; }
+  @media (max-width: 960px) { main { grid-template-columns: 1fr; } }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .panel > h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); margin: 0; padding: 12px 14px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 8px; }
+  .panel > h2 .right { margin-left: auto; font-weight: 400; text-transform: none; letter-spacing: 0; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { font-size: 11px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .4px; }
+  td.num { text-align: right; font-family: var(--mono); font-size: 12.5px; }
+  tr.row { cursor: pointer; }
+  tr.row:hover { background: var(--bg); }
+  tr.row.active { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .type { font-family: var(--mono); font-size: 11.5px; padding: 2px 6px; border-radius: 4px; background: var(--bg); border: 1px solid var(--line); }
+  .type.MISSING_CREDIT, .type.DOUBLE_DEBIT { background: var(--bad-bg); color: var(--bad); border-color: transparent; }
+  .type.FEE_MISMATCH { background: var(--warn-bg); color: var(--warn); border-color: transparent; }
+  .type.TIMING_T1 { background: var(--ok-bg); color: var(--ok); border-color: transparent; }
+  .type.UNRESOLVED { background: var(--bg); color: var(--muted); border-style: dashed; }
+  button { font: inherit; padding: 6px 12px; border-radius: 7px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { color: var(--bad); border-color: var(--bad); }
+  button:disabled { opacity: .5; cursor: default; }
+  .body { padding: 14px; }
+  .empty { color: var(--muted); padding: 40px 14px; text-align: center; }
+  .steps { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+  .step { display: grid; grid-template-columns: 22px 1fr auto; gap: 8px; align-items: baseline; font-size: 12.5px; }
+  .step .n { color: var(--muted); font-family: var(--mono); }
+  .step code { font-family: var(--mono); font-size: 12px; }
+  .step .meta { color: var(--muted); font-family: var(--mono); font-size: 11.5px; }
+  .step.reasoning { color: var(--muted); font-style: italic; }
+  .trust { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px 12px; border-radius: 8px; margin-bottom: 12px; border: 1px solid var(--line); }
+  .trust.ok { background: var(--ok-bg); border-color: transparent; color: var(--ok); }
+  .trust.bad { background: var(--bad-bg); border-color: transparent; color: var(--bad); }
+  .trust b { font-size: 15px; }
+  .trust .dim { color: var(--muted); font-size: 12px; margin-left: auto; }
+  .report { line-height: 1.55; }
+  .report h2 { font-size: 17px; margin: 4px 0 10px; }
+  .report p { margin: 6px 0; }
+  .report ul { margin: 4px 0 8px 18px; padding: 0; }
+  .report code { font-family: var(--mono); font-size: 12.5px; background: var(--bg); padding: 1px 4px; border-radius: 4px; }
+  mark.traced { background: var(--ok-bg); color: inherit; border-bottom: 2px solid var(--ok); padding: 0 1px; border-radius: 2px; }
+  mark.untraced { background: var(--bad-bg); color: var(--bad); border-bottom: 2px solid var(--bad); padding: 0 1px; border-radius: 2px; font-weight: 600; }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); align-items: center; }
+  .actions .right { margin-left: auto; display: flex; gap: 8px; }
+  .note { margin-top: 12px; padding: 10px 12px; border-radius: 8px; background: var(--bg); border: 1px solid var(--line); font-size: 13px; }
+  .note.ok { background: var(--ok-bg); border-color: transparent; }
+  .note.err { background: var(--bad-bg); border-color: transparent; color: var(--bad); }
+  .spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; vertical-align: -2px; margin-right: 6px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1>LedgerLens <span>reconciliation-break investigator</span></h1>
+  <span id="modeBadge" class="badge">connecting…</span>
+  <div class="spacer"></div>
+  <label>Business date <input type="date" id="date" /></label>
+  <a id="kibanaLink" class="badge" target="_blank" rel="noopener">Open agent in Kibana ↗</a>
+</header>
+
+<section class="tiles">
+  <div class="tile"><div class="k">Successful disbursals</div><div class="v" id="tDisb">–</div><div class="s" id="tPartners"></div></div>
+  <div class="tile"><div class="k">Disbursed value</div><div class="v" id="tValue">–</div><div class="s">ledger DISBURSAL_SUCCEEDED</div></div>
+  <div class="tile"><div class="k">Breaks flagged by ES|QL</div><div class="v" id="tBreaks">–</div><div class="s" id="tTook"></div></div>
+  <div class="tile zero"><div class="k">Figures computed by the LLM</div><div class="v">0</div><div class="s">by construction</div></div>
+</section>
+
+<main>
+  <section class="panel">
+    <h2>Break queue <span class="right" id="queueMeta"></span></h2>
+    <div id="queue"><div class="empty">Loading…</div></div>
+  </section>
+
+  <section class="panel">
+    <h2>Investigation <span class="right" id="invMeta"></span></h2>
+    <div class="body" id="inv"><div class="empty">Select a break to investigate.</div></div>
+  </section>
+</main>
+
+<script type="module">
+import { extractFacts, checkReport, annotate } from "./traceability.js";
+
+const $ = (id) => document.getElementById(id);
+const inr = (v) => "₹" + Number(v).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+let config = {};
+let state = { breaks: [], active: null, conversation_id: null, report: "", steps: [], facts: null, lang: "en", translations: {} };
+
+async function api(path, body) {
+  const res = await fetch(path, body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : undefined);
+  const j = await res.json();
+  if (!res.ok) throw new Error(j.error || res.statusText);
+  return j;
+}
+
+// -------------------------------------------------- load
+
+async function init() {
+  config = await api("/api/config");
+  $("modeBadge").textContent = config.agent_mode === "mock" ? "MOCK AGENT · no LLM · template report" : `agent: ${config.agent_id} · LLM: ${config.llm}`;
+  $("modeBadge").className = "badge" + (config.agent_mode === "mock" ? " mock" : "");
+  $("kibanaLink").href = `${config.kibana_url}/app/agent_builder`;
+  $("date").value = config.business_date;
+  $("date").addEventListener("change", () => loadDay($("date").value));
+  await loadDay(config.business_date);
+}
+
+async function loadDay(business_date) {
+  $("queue").innerHTML = '<div class="empty"><span class="spinner"></span>Matching ledger against settlement…</div>';
+  const s = await api(`/api/summary?business_date=${business_date}`);
+  state.breaks = s.breaks;
+  $("tDisb").textContent = s.disbursals.toLocaleString("en-IN");
+  $("tPartners").textContent = `${s.partners} partners`;
+  $("tValue").textContent = inr(s.total_inr);
+  $("tBreaks").textContent = s.breaks.length;
+  $("tTook").textContent = `ES|QL match in ${s.took_ms.breaks} ms`;
+  $("queueMeta").textContent = `${s.breaks.length} of ${s.disbursals} need a look`;
+  if (!s.breaks.length) {
+    $("queue").innerHTML = '<div class="empty">Day reconciled clean.</div>';
+    return;
+  }
+  const rows = s.breaks.map((b) => `
+    <tr class="row" data-id="${b.disbursal_id}">
+      <td><code>${b.disbursal_id}</code></td>
+      <td><span class="type ${b.break_type}">${b.break_type}</span></td>
+      <td>${b.partner}<br><span style="color:var(--muted);font-size:11px">${b.rail}</span></td>
+      <td class="num">${inr(b.ledger_inr)}</td>
+      <td class="num">${inr(b.settled_inr)}</td>
+      <td class="num" style="color:${b.delta_inr === 0 ? "var(--muted)" : "var(--bad)"}">${inr(b.delta_inr)}</td>
+      <td class="num">${b.settlement_rows}</td>
+    </tr>`).join("");
+  $("queue").innerHTML = `<table><thead><tr><th>Disbursal</th><th>Type</th><th>Partner</th><th style="text-align:right">Ledger</th><th style="text-align:right">Settled</th><th style="text-align:right">Delta</th><th style="text-align:right">Rows</th></tr></thead><tbody>${rows}</tbody></table>`;
+  for (const tr of $("queue").querySelectorAll("tr.row")) tr.addEventListener("click", () => investigate(tr.dataset.id));
+}
+
+// -------------------------------------------------- investigate
+
+async function investigate(disbursal_id) {
+  state = { ...state, active: disbursal_id, conversation_id: null, report: "", steps: [], facts: null, lang: "en", translations: {} };
+  for (const tr of $("queue").querySelectorAll("tr.row")) tr.classList.toggle("active", tr.dataset.id === disbursal_id);
+  $("invMeta").textContent = disbursal_id;
+  $("inv").innerHTML = `<div class="empty"><span class="spinner"></span>Agent is investigating <code>${disbursal_id}</code>… it will call the ES|QL tools in sequence and narrate the result.</div>`;
+  try {
+    const r = await api("/api/investigate", { disbursal_id });
+    state.conversation_id = r.conversation_id;
+    state.steps = r.steps;
+    state.report = r.message;
+    state.facts = extractFacts(r.steps);
+    $("invMeta").textContent = `${disbursal_id} · ${(r.elapsed_ms / 1000).toFixed(1)} s`;
+    render();
+  } catch (e) {
+    $("inv").innerHTML = `<div class="note err">Investigation failed: ${esc(e.message)}</div>`;
+  }
+}
+
+function render(extraNote = "") {
+  const b = state.breaks.find((x) => x.disbursal_id === state.active) || {};
+  const text = state.lang === "en" ? state.report : state.translations[state.lang];
+  const check = checkReport(text, state.facts);
+  const toolCalls = state.steps.filter((s) => s.type === "tool_call");
+  const stepsHtml = state.steps.map((s, i) => {
+    if (s.type === "reasoning") return `<div class="step reasoning"><span class="n"></span><span>${esc(String(s.reasoning || "").slice(0, 160))}</span><span></span></div>`;
+    if (s.type !== "tool_call") return "";
+    const rows = (s.results || []).reduce((n, r) => n + (r?.data?.values?.length ?? (Array.isArray(r?.data) ? r.data.length : 0)), 0);
+    const p = Object.entries(s.params || {}).map(([k, v]) => `${k}=${String(v).slice(0, 60)}`).join(", ");
+    return `<div class="step"><span class="n">${i + 1}</span><span><code>${esc(s.tool_id)}</code> <span class="meta">(${esc(p)})</span></span><span class="meta">${rows ? rows + " rows" : ""}</span></div>`;
+  }).join("");
+
+  const trust = check.total
+    ? `<div class="trust ${check.complete ? "ok" : "bad"}">
+        <b>${check.traced}/${check.total}</b> figures and IDs traced to a tool result
+        <span>· ${check.amounts.length} amounts · ${check.ids.length} identifiers · <b>${check.untraced}</b> untraced</span>
+        <span class="dim">${toolCalls.length} tool calls · every number below is highlighted where it came from</span>
+      </div>`
+    : "";
+
+  const isTiming = /TIMING_T1/.test(state.report);
+  const hasApprovalPrompt = /approve/i.test(state.report);
+  const actions = `
+    <div class="actions">
+      ${hasApprovalPrompt && !isTiming ? `<button class="primary" id="approve">Approve → open case</button><button class="danger" id="dismiss">Dismiss</button>` : `<span class="badge">no write action offered</span>`}
+      <div class="right">
+        ${config.sarvam ? `<button data-lang="en" class="lang">English</button><button data-lang="hi-IN" class="lang">हिन्दी</button><button data-lang="kn-IN" class="lang">ಕನ್ನಡ</button>` : ""}
+        ${state.conversation_id && config.agent_mode !== "mock" ? `<a class="badge" target="_blank" rel="noopener" href="${config.kibana_url}/app/agent_builder/conversations/${encodeURIComponent(state.conversation_id)}">Trace waterfall in Kibana ↗</a>` : ""}
+      </div>
+    </div>`;
+
+  $("inv").innerHTML = `
+    <div class="steps">${stepsHtml}</div>
+    ${trust}
+    <div class="report">${markdown(annotate(text, check))}</div>
+    ${actions}
+    <div id="note">${extraNote}</div>`;
+
+  $("approve")?.addEventListener("click", () => act("approve", b));
+  $("dismiss")?.addEventListener("click", () => act("dismiss", b));
+  for (const btn of $("inv").querySelectorAll("button.lang")) btn.addEventListener("click", () => setLang(btn.dataset.lang));
+}
+
+async function act(kind, b) {
+  const note = $("note");
+  note.innerHTML = `<div class="note"><span class="spinner"></span>${kind === "approve" ? "Approved. Running the open-case workflow…" : "Dismissing…"}</div>`;
+  for (const btn of $("inv").querySelectorAll("button")) btn.disabled = true;
+  try {
+    let msg;
+    if (kind === "approve" && config.case_mode === "direct") {
+      const r = await api("/api/open-case", { title: `${b.break_type} · ${b.disbursal_id} · Delta ${inr(b.delta_inr)}`, disbursal_id: b.disbursal_id, break_type: b.break_type, severity: /MISSING|DOUBLE/.test(b.break_type) ? "high" : "medium", report: state.report, approved_by: "ops-console" });
+      msg = `Workflow \`${r.execution_id}\` ${r.status}.` + (r.audit[0] ? ` Case \`${r.audit[0].case_id}\` · audit record at ${r.audit[0]["@timestamp"]}.` : "");
+    } else {
+      const r = await api("/api/chat", { input: kind === "approve" ? "Approve. Open the case." : "Dismiss.", conversation_id: state.conversation_id });
+      state.steps = [...state.steps, ...r.steps];
+      msg = r.message;
+    }
+    const audit = kind === "approve" ? await api(`/api/audit?disbursal_id=${b.disbursal_id}`) : [];
+    const auditLine = audit[0] ? `<div style="margin-top:6px;font-family:var(--mono);font-size:12px">audit: ${esc(audit[0].action)} · case_id ${esc(audit[0].case_id)} · by ${esc(audit[0].approved_by)} · ${esc(audit[0]["@timestamp"])} <a target="_blank" rel="noopener" href="${config.kibana_url}/app/observability/cases">open Cases ↗</a></div>` : "";
+    render(`<div class="note ${kind === "approve" ? "ok" : ""}">${markdown(esc(msg))}${auditLine}</div>`);
+  } catch (e) {
+    render(`<div class="note err">${kind} failed: ${esc(e.message)}</div>`);
+  }
+}
+
+async function setLang(lang) {
+  if (lang !== "en" && !state.translations[lang]) {
+    $("note").innerHTML = `<div class="note"><span class="spinner"></span>Translating with Sarvam… IDs and figures are then re-checked against the tool results.</div>`;
+    try {
+      const r = await api("/api/translate", { text: state.report, target: lang });
+      state.translations[lang] = r.translated_text;
+    } catch (e) {
+      return render(`<div class="note err">Translation failed: ${esc(e.message)}</div>`);
+    }
+  }
+  state.lang = lang;
+  render();
+}
+
+// -------------------------------------------------- tiny markdown (headings, bold, code, bullets, paragraphs)
+
+function markdown(html) {
+  const lines = html.split("\n");
+  let out = "", inList = false;
+  const inline = (s) => s.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/`([^`]+)`/g, "<code>$1</code>");
+  for (const raw of lines) {
+    const line = raw.trimEnd();
+    if (/^\s*[-*•]\s+/.test(line)) {
+      if (!inList) { out += "<ul>"; inList = true; }
+      out += `<li>${inline(line.replace(/^\s*[-*•]\s+/, ""))}</li>`;
+      continue;
+    }
+    if (inList) { out += "</ul>"; inList = false; }
+    if (/^#{1,3}\s/.test(line)) out += `<h2>${inline(line.replace(/^#+\s/, ""))}</h2>`;
+    else if (line.trim() === "") out += "";
+    else out += `<p>${inline(line)}</p>`;
+  }
+  if (inList) out += "</ul>";
+  return out;
+}
+
+init().catch((e) => { $("queue").innerHTML = `<div class="note err">${esc(e.message)}</div>`; });
+</script>
+</body>
+</html>

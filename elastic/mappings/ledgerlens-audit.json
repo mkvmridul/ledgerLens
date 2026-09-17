@@ -1,0 +1,18 @@
+{
+  "mappings": {
+    "dynamic": "strict",
+    "_meta": {
+      "purpose": "Append-only record of every action the agent took through an Elastic Workflow, written by the workflow itself after human approval."
+    },
+    "properties": {
+      "@timestamp":    { "type": "date" },
+      "action":        { "type": "keyword" },
+      "disbursal_id":  { "type": "keyword" },
+      "break_type":    { "type": "keyword" },
+      "case_id":       { "type": "keyword" },
+      "approved_by":   { "type": "keyword" },
+      "execution_id":  { "type": "keyword" },
+      "summary":       { "type": "text" }
+    }
+  }
+}
