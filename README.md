@@ -127,6 +127,8 @@ presentation/                   the deck
 DATA.md                         provenance: what is synthetic (everything), how it was generated, the break catalogue
 DEMO.md                         run of show, prompts, fallbacks, expected questions
 BENCHMARKS.md                   verbatim verify output; the source of every number quoted above
+OPTIMIZATION.md                 where latency actually goes: LLM vs Elasticsearch, done vs open
+CHANGELOG.md                    notable changes, with the reasoning and the measurements
 PRIOR_WORK.md                   what existed before build day, file by file
 ```
 
